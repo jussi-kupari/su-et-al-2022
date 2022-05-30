@@ -1,0 +1,347 @@
+---
+title: "06 Immune Cell Analysis"
+author: "Jussi Kupari"
+date: "Last edited: `r Sys.Date()`"
+output: html_notebook
+---
+
+```{r, warning=FALSE}
+# Load libraries and functions
+suppressPackageStartupMessages({
+  library(tidyverse)
+  library(magrittr)
+  library(Seurat)
+  library(UpSetR)
+  library(patchwork)
+  library(enrichR)
+  library(readxl)
+  library(fcoex)
+  library(scPred)
+})
+R.utils::sourceDirectory(here::here("R", "functions"), modifiedOnly=FALSE)
+```
+
+```{r}
+# Load full data
+(drg_ra_full <- readRDS(here::here("data", "proc", "drg_ra_full_merged.rds")))
+```
+
+```{r, fig.width=12, results='hide'}
+# Plot UMAP of final merged dataset
+DimPlot(drg_ra_full, label = TRUE) 
+```
+
+#### Immune cell analysis
+```{r}
+# Subset immune cells
+(immune_cells <- 
+   drg_ra_full %>% 
+   set_idents("cell_class") %>% 
+   subset(idents = "ImmuneCell") %>%  
+   set_idents("cell_class"))
+```
+
+```{r}
+# Check cell types, ok
+immune_cells@meta.data$cell_class %>% unique()
+```
+
+#### Assign cell type labels
+```{r}
+# Load reference data and wrangle cell labels
+# DOI: 10.1038/s41593-021-01005-1 
+# Disentangling glial diversity in peripheral nerves at single-nuclei resolution
+immune_atlas <-
+  readRDS(here::here("data", "ref", "GSE182098_immune-cell_single-cell-atlas-15Jan2021.RDS"))
+
+immune_atlas@meta.data %<>%
+  mutate(cell_type = case_when(
+    res.0.8 %in% c(0, 1, 9) ~ "BCell",
+    res.0.8 == 2 ~ "Cd4hT",
+    res.0.8 == 3 ~ "Cd8ctxT",
+    res.0.8 == 4 ~ "EndoneurialMac",
+    res.0.8 == 5 ~ "EpineurialMac",
+    res.0.8 == 6 ~ "Monocyte",
+    res.0.8 == 7 ~ "Trg",
+    res.0.8 == 8 ~ "NK"
+  ))
+```
+
+```{r, fig.width=12}
+# Plot UMAPS
+DimPlot(immune_atlas, label = TRUE) +
+  DimPlot(immune_atlas, label = TRUE, group.by = "cell_type", repel = TRUE)
+```
+
+```{r, results='hide'}
+# Create classifier for immune cells
+immune_atlas %<>%
+  NormalizeData() %>%
+  FindVariableFeatures() %>%
+  ScaleData() %>%
+  RunPCA(npcs = 100, verbose = FALSE)
+
+immune_atlas %<>%
+  getFeatureSpace("cell_type") %>%
+  trainModel(model = "mda")
+```
+
+```{r}
+# Check model performance
+immune_atlas %>% get_scpred()
+```
+
+```{r}
+# Cluster immune cells and predict labels 
+immune_atlas %<>% set_idents("cell_type")
+immune_cells %<>%
+  cluster_seurat(dims = 1:10, resolution = 0.5) %>%
+  scPredict(immune_atlas, max.iter.harmony = 50)
+```
+
+```{r, fig.width=12}
+DimPlot(immune_cells,
+          label = TRUE,
+          group.by = "scpred_prediction",
+          repel = TRUE)
+```
+
+```{r}
+# Filter out  unassigned cells and add cell type to metadata
+(immune_cells %<>%
+  set_idents("scpred_prediction") %>%
+  subset(
+    idents = immune_cells@meta.data$scpred_prediction %>% unique() %>% keep(~ .x != "unassigned")
+  ))
+immune_cells@meta.data %<>% 
+  mutate(cell_type = scpred_prediction)
+```
+
+```{r, fig.width=12}
+# Plot cell type distribution across timepoints
+immune_cells@meta.data %>%
+  count(timepoint_days, cell_type) %>%
+  group_by(timepoint_days) %>%
+  mutate(pct = prop.table(n) * 100) %>%
+  ggplot(aes(factor(timepoint_days), pct, fill = cell_type)) +
+  geom_bar(stat = "identity") +
+  geom_text(aes(label=paste0(sprintf("%1.1f", pct),"%")),
+            position=position_stack(vjust=0.5)) +
+  labs(x = "Timepoint in days", y = "Proportion of cells", fill = "Cell type") +
+  cowplot::theme_cowplot() +
+  scale_y_continuous(expand = expansion(mult = c(0, .1)))
+```
+
+```{r, results='hide'}
+# Get markers for cell types
+markers <-
+  immune_cells %>%
+  set_idents("treatment") %>% 
+  subset(idents = "Control") %>% 
+  set_idents("cell_type") %>%
+  FindAllMarkers(only.pos = TRUE)
+```
+
+```{r, fig.width=12, results='hide'}
+# Heatmap of markers (Control only)
+top_markers <-
+  markers %>% 
+  group_by(cluster) %>% 
+  slice_min(p_val_adj, n = 10, with_ties = FALSE)
+
+immune_cells %>% 
+  ScaleData(rownames(immune_cells)) %>% 
+  set_idents("treatment") %>% 
+  subset(idents = "Control") %>% 
+  DoHeatmap(top_markers$gene, group.by = "cell_type")
+```
+
+```{r}
+# Subset innate immune cells
+(innate_cells <-
+  immune_cells %>% 
+  subset(idents = c("Monocyte", "EpineurialMac", "EndoneurialMac")))
+```
+
+```{r}
+# Check for smallest cell groups in the data
+innate_cells@meta.data %>% 
+  count(cell_type, timepoint_days) %>% 
+  arrange(n) %>% 
+  head(10)
+```
+
+#### Augur: Perturbation analysis
+```{r}
+# Add needed columns to metadata for running Augur
+innate_cells@meta.data %<>%
+  mutate(label = factor(timepoint_days))
+```
+
+```{r}
+# Get a list of mouse protein coding genes excluding Y chromosome
+# https://www.ensembl.org/biomart/martview/766d94f98a348ad7b78782227f808ad4
+mouse_genes <- readRDS(here::here("data", "ref", "mouse_genes_ensembl.rds"))
+
+genes_use <-
+  mouse_genes  %>% 
+  filter(
+    Gene.name != "",
+    Gene.type == "protein_coding",
+    Chromosome.scaffold.name != "Y"
+  )  %>% 
+  pull(Gene.name)
+```
+
+```{r}
+# Filter data and create a new Seurat object
+innate_cells2 <- as.matrix(GetAssayData(innate_cells, slot = "counts"))
+innate_cells2 <- innate_cells2[row.names(innate_cells2) %in% genes_use, ]
+
+innate_cells2 %<>%  
+  CreateSeuratObject() %>% 
+  NormalizeData() %>% 
+  FindVariableFeatures() %>% 
+  ScaleData() %>% 
+  RunPCA(npcs = 100, verbose = TRUE)
+
+innate_cells2@meta.data <-
+  innate_cells2@meta.data %>% 
+  select(-orig.ident) %>% 
+  bind_cols(
+    innate_cells@meta.data %>% 
+      select(label, cell_type, orig.ident, treatment)
+  )
+```
+
+```{r}
+# Check if ok
+innate_cells2@meta.data %>% select(label, cell_type, treatment)
+```
+
+```{r}
+# Split object to combinations
+split_innate <- SplitObject(innate_cells2, "label")
+
+grid <- expand_grid(ctrl = "0", ra = c("0.25", "0.5", "1", "2", "12", "33", "63"))
+
+combos <-
+  grid  %>% 
+  pmap(~ merge(split_innate[[.x]], split_innate[[.y]])) %>% 
+  set_names(grid$ra)
+```
+
+```{r}
+# Test on one timepoint
+augur <- 
+  Augur::calculate_auc(combos[["0.5"]], n_threads = parallel::detectCores() - 1)
+```
+
+```{r}
+# Check, ok
+augur$AUC
+```
+
+```{r, results='hide'}
+# Run Augur for all combinations
+augur_combos <-
+  combos %>%
+  map(Augur::calculate_auc, 
+      n_threads = parallel::detectCores() - 1
+  )
+```
+
+```{r}
+# Save Augur results
+saveRDS(augur_combos, file = here::here("data", "proc", "augur_combos_innateimmune.rds"))
+```
+
+```{r}
+# Wrangle augur results for plotting
+aucs <-
+  augur_combos %>%
+  map("AUC")
+
+aucs %<>%
+  map2(names(aucs), ~ {
+    .x %<>% mutate(time = .y)
+    return(.x)})
+
+aucs %<>%
+  bind_rows() %>%
+  mutate(time = fct_inorder(time))
+
+aucs %<>%
+  split(.$cell_type)
+```
+
+```{r}
+# Plot Augur scores 
+p <-
+  plot_aucs(aucs$Monocyte) +
+  plot_aucs(aucs$EndoneurialMac) +
+  plot_aucs(aucs$EpineurialMac) 
+ 
+gt <- patchwork::patchworkGrob(p)
+gridExtra::grid.arrange(gt, left = "Timepoint days", bottom = "Perturbation Score")
+```
+
+#### Differential expression analysis between control and each timepoint for each cell type
+```{r}
+# Create all combinations of cell types and timepoints
+celltypes <-
+  immune_cells@meta.data$cell_type %>%
+  unique()
+
+timepoints <-
+  immune_cells@meta.data$timepoint %>%
+  str_subset("0$", negate = TRUE) %>%
+  unique()
+
+grid <- expand_grid(celltypes, timepoints)
+```
+
+```{r}
+# Create function that captures possible errors
+safe_markers <- safely(get_markers2)
+```
+
+```{r, results='hide'}
+# Get list of markers for all combinations of celltype and timepoint
+immune_cells_timepoint_markers <-
+  pmap(grid, ~ safe_markers(immune_cells, .x, .y))
+```
+
+```{r}
+# Save raw markers
+saveRDS(
+  immune_cells_timepoint_markers, file = here::here("outputs","immune_cells_timepoint_markers.rds"))
+```
+
+```{r}
+# Filter out errors and split results by both celltype and timepoint
+results <-
+  immune_cells_timepoint_markers %>%
+  map("result") %>%
+  bind_rows()
+
+by_celltype <-
+  results %>%
+  split(.$celltype)
+
+by_timepoint <-
+  results %>%
+  split(.$timepoint)
+```
+
+```{r}
+# Write markers in an excel file 
+openxlsx::write.xlsx(by_celltype, file = here::here("outputs", "immune_cells_by_celltype_markers.xlsx"))
+openxlsx::write.xlsx(by_timepoint, file = here::here("outputs", "immune_cells_by_timepoint_markers.xlsx"))
+```
+
+```{r}
+# End
+clear_libraries()
+
+```

@@ -1,0 +1,399 @@
+---
+title: "05 Nonneuronal/nonimmune Cell Analysis"
+author: "Jussi Kupari"
+date: "Last edited: `r Sys.Date()`"
+output: html_notebook
+---
+
+```{r, warning=FALSE}
+# Load libraries and functions
+suppressPackageStartupMessages({
+  library(tidyverse)
+  library(magrittr)
+  library(Seurat)
+  library(UpSetR)
+  library(patchwork)
+  library(enrichR)
+  library(readxl)
+  library(fcoex)
+})
+R.utils::sourceDirectory(here::here("R", "functions"), modifiedOnly=FALSE)
+```
+
+```{r}
+# Load full data
+(drg_ra_full <- readRDS(here::here("data", "proc", "drg_ra_full_merged.rds")))
+```
+
+```{r, fig.width=12, results='hide'}
+# Plot UMAP of final merged dataset
+DimPlot(drg_ra_full, label = TRUE) 
+```
+
+#### Non-neuron/non-immune cell analysis
+```{r}
+# Subset non-neurons
+(nonneurons <- 
+   drg_ra_full %>% 
+   set_idents("cell_class") %>% 
+   subset(
+    idents = drg_ra_full@meta.data$cell_class %>% unique() %>% discard(~ .x %in% c("Neuron", "ImmuneCell"))
+  ) %>%  
+   set_idents("cell_class"))
+```
+
+```{r}
+# Check cell types, ok
+nonneurons@meta.data$cell_class %>% unique
+```
+
+```{r}
+# Check for smallest cell groups in the data
+nonneurons@meta.data %>% 
+  count(cell_class, timepoint_days) %>% 
+  arrange(n) %>% 
+  head(10)
+```
+
+```{r}
+# Downsample data to equalize cell numbers between all type/timepoint groups
+set.seed(1)
+
+sampled_cells <-
+  nonneurons@meta.data %>% 
+  rownames_to_column("cell") %>% 
+  group_by(cell_class, timepoint_days) %>% 
+  slice_sample(n = 45) %>% 
+  pull(cell)
+
+nonneurons_sample <-
+  subset(nonneurons, cells = sampled_cells)
+```
+
+```{r}
+# Check cell numbers
+nonneurons_sample@meta.data %>% 
+  count(cell_class, timepoint_days)
+```
+
+#### Augur: Perturbation analysis
+```{r}
+# Add needed columns to metadata for running Augur
+nonneurons_sample@meta.data %<>%
+  mutate(
+    cell_type = as.character(nonneurons_sample@meta.data$cell_class),
+    label = factor(timepoint_days))
+```
+
+```{r}
+# Get a list of mouse protein coding genes excluding Y chromosome
+# https://www.ensembl.org/biomart/martview/766d94f98a348ad7b78782227f808ad4
+mouse_genes <- readRDS(here::here("data", "ref", "mouse_genes_ensembl.rds"))
+
+genes_use <-
+  mouse_genes  %>% 
+  filter(
+    Gene.name != "",
+    Gene.type == "protein_coding",
+    Chromosome.scaffold.name != "Y"
+  )  %>% 
+  pull(Gene.name)
+```
+
+```{r}
+# Filter data and create a new Seurat object
+nonneurons_sample2 <- as.matrix(GetAssayData(nonneurons_sample, slot = "counts"))
+nonneurons_sample2 <- nonneurons_sample2[row.names(nonneurons_sample2) %in% genes_use, ]
+
+nonneurons_sample2 %<>%  
+  CreateSeuratObject() %>% 
+  NormalizeData() %>% 
+  FindVariableFeatures() %>% 
+  ScaleData() %>% 
+  RunPCA(npcs = 100, verbose = TRUE)
+
+nonneurons_sample2@meta.data <-
+  nonneurons_sample2@meta.data %>% 
+  select(-orig.ident) %>% 
+  bind_cols(
+    nonneurons_sample@meta.data %>% 
+      select(label, cell_type, orig.ident, treatment)
+  )
+```
+
+```{r}
+# Check if ok
+nonneurons_sample2@meta.data %>% select(label, cell_type, treatment)
+```
+
+```{r}
+# Split object to combinations
+split_nonneurons <- SplitObject(nonneurons_sample2, "label")
+
+grid <- expand_grid(ctrl = "0", ra = c("0.25", "0.5", "1", "2", "12", "33", "63"))
+
+combos <-
+  grid  %>% 
+  pmap(~ merge(split_nonneurons[[.x]], split_nonneurons[[.y]])) %>% 
+  set_names(grid$ra)
+```
+
+```{r}
+# Test on one timepoint
+augur <- Augur::calculate_auc(combos[["0.25"]], n_threads = parallel::detectCores() - 1)
+```
+
+```{r}
+# Check, ok
+augur$AUC
+```
+
+```{r, results='hide'}
+# Run Augur for all combinations
+augur_combos <-
+  combos %>%
+  map(Augur::calculate_auc, n_threads = parallel::detectCores() - 1)
+```
+
+```{r}
+# Save Augur results
+saveRDS(augur_combos, file = here::here("data", "proc", "augur_combos_nonneurons.rds"))
+```
+
+```{r}
+# Wrangle augur results for plotting
+aucs <-
+  augur_combos %>%
+  map("AUC")
+
+aucs %<>%
+  map2(names(aucs), ~ {
+    .x %<>% mutate(time = .y)
+    return(.x)})
+
+aucs %<>%
+  bind_rows() %>%
+  mutate(time = fct_inorder(time))
+
+aucs %<>%
+  split(.$cell_type)
+```
+
+```{r, fig.width=12}
+# Plot Augur scores 
+p <-
+  plot_aucs(aucs$EndoNeuralCell) +
+  plot_aucs(aucs$EpineurialCell) +
+  plot_aucs(aucs$LymphaticEndothelialCell) +
+  plot_aucs(aucs$MicrovascularEndothelialCell) +
+  plot_aucs(aucs$MyelSchwannCell) +
+  plot_aucs(aucs$NonMyelSchwannCell) +
+  plot_aucs(aucs$Pericyte) +
+  plot_aucs(aucs$PerineurialCell) +
+  plot_aucs(aucs$SatelliteGlia)
+ 
+gt <- patchwork::patchworkGrob(p)
+gridExtra::grid.arrange(gt, left = "Timepoint days", bottom = "Perturbation Score")
+```
+
+#### DE between control and each timepoint all with celltypes collapsed together (using sampled data)
+```{r, results='hide'}
+# Get DE genes for each comparison
+timepoints <-
+  nonneurons_sample@meta.data$timepoint %>%
+  str_subset("0$", negate = TRUE) %>%
+  unique()
+
+bulk_grid <- expand_grid(timepoints = timepoints, control = "0")
+
+pseudobulk <-
+  bulk_grid %>% 
+  pmap( 
+    ~ nonneurons_sample %>%
+      set_idents("timepoint_days") %>%
+      FindMarkers(ident.1 = .x, ident.2 = .y) %>%
+      rownames_to_column("gene") %>% 
+      filter(p_val_adj < 10^-20)
+  ) %>%
+  set_names(timepoints)
+```
+
+```{r}
+# Collect up- an downregulated genes
+pseudobulk_down_genes <-
+  pseudobulk %>%
+  map(~.x %>% filter(avg_log2FC < 0) %>% pull(gene))
+
+pseudobulk_up_genes <-
+  pseudobulk %>%
+  map(~.x %>% filter(avg_log2FC > 0) %>% pull(gene))
+```
+
+```{r}
+# Extract gene intersections between timepoints for pseudobulk
+pseudobulk_upregulated_intersections <- get_upset_gene_lists(pseudobulk_up_genes)
+pseudobulk_downregulated_intersections <- get_upset_gene_lists(pseudobulk_down_genes)
+```
+
+#### Differential expression between control and the first 48h for each celltype
+```{r, results='hide'}
+# Collect celltypes
+celltypes <-
+  nonneurons_sample@meta.data$cell_class %>%
+  unique()
+
+# Create function
+get_treatment_markers <- 
+  as_mapper(
+    ~nonneurons_sample %>%
+      subset(idents = .x) %>%
+      set_idents("timepoint_days") %>% 
+      subset(idents = c("0", "0.25", "0.5", "1", "2")) %>%
+      set_idents("treatment") %>% 
+      FindMarkers(ident.1 = "RA", ident.2 = "Control") %>%
+      rownames_to_column("gene") %>% 
+      filter(p_val_adj < 10^-5)
+  )
+
+# Make it safe
+get_safely_treatment_markers <- safely(get_treatment_markers)
+
+# Get markers for each cell type
+de_first_48h <-
+  celltypes %>% 
+  map(get_safely_treatment_markers) %>% 
+  set_names(celltypes) %>% 
+  map("result") %>% 
+  compact()
+
+# Extract upregulated genes
+up_de_first_48h_genes <-
+  de_first_48h %>%
+  map(~.x %>% filter(avg_log2FC > 0) %>% pull(gene))
+
+# Extract downregulated genes
+down_de_first_48h_genes <-
+  de_first_48h %>%
+  map(~.x %>% filter(avg_log2FC < 0) %>% pull(gene))
+```
+
+```{r, fig.width=12}
+# Plot upset up first 48h
+plot_upset(up_de_first_48h_genes, order = celltypes)
+```
+
+```{r}
+first48h_upregulated_intersections <- get_upset_gene_lists(up_de_first_48h_genes)
+```
+
+```{r}
+# Plot upset down first 48h 
+plot_upset(down_de_first_48h_genes, celltypes)
+```
+
+```{r}
+first48h_downregulated_intersections <- get_upset_gene_lists(down_de_first_48h_genes)
+```
+
+#### Differential expression analysis between control and each timepoint for each cell type
+```{r}
+# Create all combinations of cell types and timepoints
+celltypes <-
+  nonneurons@meta.data$cell_class %>%
+  unique()
+
+timepoints <-
+  nonneurons@meta.data$timepoint %>%
+  str_subset("0$", negate = TRUE) %>%
+  unique()
+
+grid <- expand_grid(celltypes, timepoints)
+```
+
+```{r}
+# Create function that captures possible errors
+safe_markers <- safely(get_markers2)
+```
+
+```{r, results='hide'}
+# Get list of markers for all combinations of celltype and timepoint
+nonneuron_timepoint_markers <-
+  pmap(grid, ~ safe_markers(nonneurons, .x, .y))
+```
+
+```{r}
+# Save raw markers
+saveRDS(
+  nonneuron_timepoint_markers, file = here::here("outputs","nonneuron_timepoint_markers.rds"))
+```
+
+```{r}
+# Filter out errors and split results by both celltype and timepoint
+results <-
+  nonneuron_timepoint_markers %>%
+  map("result") %>%
+  bind_rows()
+
+by_celltype <-
+  results %>%
+  split(.$celltype)
+
+by_timepoint <-
+  results %>%
+  split(.$timepoint)
+```
+
+```{r}
+# Write markers in an excel file 
+openxlsx::write.xlsx(by_celltype, file = here::here("outputs", "nonneurons_by_celltype_markers.xlsx"))
+openxlsx::write.xlsx(by_timepoint, file = here::here("outputs", "nonneurons_by_timepoint_markers.xlsx"))
+```
+
+#### Enrichr analysis for gene sets
+```{r}
+# Get available DBs to choose from
+(dbs_all <- listEnrichrDbs())
+```
+
+#### FCOEX using satellite glia only
+```{r}
+satellites <-
+  nonneurons_sample %>% 
+  set_idents("cell_class") %>% 
+  subset(idents = "SatelliteGlia") %>% 
+  set_idents("timepoint_days")
+
+fc_full <-
+  satellites %>% 
+  run_fcoex2(n_genes = 250)
+```
+
+```{r}
+# Wrangle fcoex results
+mod_genes <- fc_full@module_list
+
+mods <-
+mod_genes %>% 
+  keep(~ length(.x) > 5) %>% 
+  map(sort)
+```
+
+```{r}
+# Plot upset
+plot_upset(mods, order = names(mods))
+```
+
+```{r}
+# Heatmap of average Ifit1 module gene expression across timepoints
+nonneurons_sample %>% 
+  set_idents("timepoint_days") %>%
+  ScaleData(features = rownames(nonneurons_sample)) %>%
+  AverageExpression(return.seurat = TRUE) %>% 
+  set_cluster_order(c(0, 0.25, 0.5, 1, 2, 12, 33, 63)) %>% 
+  DoHeatmap(features = mods$Gbp2, draw.lines = FALSE) 
+```
+
+```{r}
+# Clear libraries
+clear_libraries()
+```

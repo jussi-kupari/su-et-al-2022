@@ -1,0 +1,13 @@
+proj.user
+.Rhistory
+*.Rdata
+*.RDS
+.httr-oauth
+.DS_Store
+*.gz
+*.html
+*.tsv
+*.xlsx
+/data/proc/*.rds
+/data/ref/*.rds
+/data/raw/P*

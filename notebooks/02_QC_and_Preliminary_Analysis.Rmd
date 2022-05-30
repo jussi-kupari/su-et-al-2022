@@ -1,0 +1,363 @@
+---
+title: "02 QC and Preliminary Analysis"
+author: "Jussi Kupari"
+date: "Last edited: `r Sys.Date()`"
+output: html_notebook
+---
+
+```{r}
+# Load libraries and custom functions
+suppressPackageStartupMessages({
+  library(tidyverse)
+  library(magrittr)
+  library(Seurat)
+  library(harmony)
+  library(scPred)
+})
+
+R.utils::sourceDirectory(here::here("R", "functions"), modifiedOnly=FALSE)
+```
+
+```{r}
+# Load preprocessed data
+(drg_ra <- readRDS(here::here("data", "proc", "drg_ra_preprocessed.rds")))
+```
+
+```{r, fig.width=12, message=FALSE}
+# First check with violins
+VlnPlot(
+  drg_ra,
+  c("nCount_RNA", "nFeature_RNA", "percent.mt"),
+  pt.size = 0,
+  group.by = "orig.ident"
+)
+```
+
+```{r, fig.width=12, message=FALSE}
+# Detected gene number distribution
+drg_ra@meta.data %>% 
+  ggplot(aes(nFeature_RNA, fill = orig.ident)) +
+  geom_histogram(alpha = 0.7, color = "white") +
+  geom_vline(xintercept = 2000, color = "red") +
+  geom_vline(xintercept = 1000, color = "blue") +
+  facet_wrap(vars(orig.ident), scales = "free") +
+  cowplot::theme_cowplot() +
+  scale_x_continuous(labels = scales::label_number(suffix = " K", scale = 1e-3)) +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1)) +
+  theme(legend.position = "none") 
+```
+
+#### Create two datasets with cutoffs at 1000 and 2000 detected features
+```{r}
+# QC filter for > 2000 Features and percent.mt < 20
+drg_ra_2000 <-
+  drg_ra %>% 
+  subset(percent.mt < 20 & nFeature_RNA > 2000)
+```
+
+```{r}
+# QC filter for 999 > Features < 2001 and and percent.mt < 20
+drg_ra_1000 <-
+  drg_ra %>% 
+  subset(percent.mt < 20 & nFeature_RNA < 2001) %>% 
+  subset(nFeature_RNA > 999)
+```
+
+#### Clustering and celltype identification with > 2000 genes as cutoff
+```{r}
+# Integrate with harmony
+drg_ra_2000 %<>% run_harmony()
+```
+
+```{r}
+# Cluster cells
+drg_ra_2000 %<>% cluster_seurat(reduction = "harmony", dims = 1:30, resolution = 0.1)
+```
+
+```{r, fig.width=12}
+# Plot UMAPS
+(DimPlot(drg_ra_2000, label = TRUE, shuffle = TRUE) + NoLegend()) +
+  (DimPlot(drg_ra_2000, shuffle = TRUE, group.by = "orig.ident") + NoLegend()) +
+  (DimPlot(drg_ra_2000, group.by = "timepoint_days", shuffle = TRUE) ) 
+```
+
+```{r, fig.width=12}
+# Plot split UMAPs by timepoint
+DimPlot(drg_ra_2000, label = TRUE, shuffle = TRUE, split.by = "timepoint_days", ncol = 4) + NoLegend() 
+```
+
+```{r, fig.width=12}
+# See where the neurons are
+FeaturePlot(drg_ra_2000, "Rbfox3", label = TRUE)
+```
+
+```{r}
+# Add neuron identifier
+drg_ra_2000@meta.data %<>% 
+  mutate(is_neuron = seurat_clusters %in% c(3, 5, 7, 9, 12))
+```
+
+```{r}
+# Save integrated full object
+saveRDS(drg_ra_2000, file = here::here("data", "proc", "drg_ra_full_first_integration_2000genes.rds"))
+```
+
+#### Identify nonneuronal celltypes
+```{r}
+# Subset nonneurons
+(nonneurons_2000 <-
+  drg_ra_2000 %>% 
+  set_idents("is_neuron") %>% 
+  subset(idents = "FALSE"))
+```
+
+```{r}
+# Use control cells only to identify celltypes
+(nonneurons_ctrl_2000 <- 
+  nonneurons_2000 %>% 
+  set_idents("timepoint_days") %>% 
+  subset(idents = "0"))
+```
+
+```{r}
+# Run Harmony
+nonneurons_ctrl_2000 %<>% run_harmony()
+```
+
+```{r}
+# Cluster nonneurons
+nonneurons_ctrl_2000 %<>% cluster_seurat(reduction = "harmony", dims = 1:20, resolution = 1)
+```
+
+```{r, fig.width=12}
+# Plot UMAPS
+(DimPlot(nonneurons_ctrl_2000, group.by = "orig.ident", shuffle = TRUE) + NoLegend()) +
+  (DimPlot(nonneurons_ctrl_2000, label = TRUE, shuffle = TRUE) + NoLegend()) 
+```
+
+```{r}
+# Add manual celltypes for non-neurons based on markers from Yim et al.
+# https://doi.org/10.1038/s41593-021-01005-1
+nonneurons_ctrl_2000@meta.data %<>% 
+  mutate(cell_type = case_when(
+    seurat_clusters %in% c(0, 1, 2, 5, 6) ~ "SatelliteGlia",
+    seurat_clusters %in% c(4, 7, 21)      ~ "EndoNeuralCell",
+    seurat_clusters %in% c(10, 16)        ~ "MyelSchwannCell",
+    seurat_clusters == 20                 ~ "Pericyte",
+    seurat_clusters == 15                 ~ "VSMC",
+    seurat_clusters %in% c(8, 17, 14)     ~ "ImmuneCell",
+    seurat_clusters == 9                  ~ "NonMyelSchwannCell",
+    seurat_clusters == 13                 ~ "LymphaticEndothelialCell",
+    seurat_clusters %in% c(3, 22, 18, 19) ~ "MicrovascularEndothelialCell",
+    seurat_clusters == 12                 ~ "PerineurialCell",
+    seurat_clusters == 11                 ~ "EpineurialCell",
+    seurat_clusters == 5                  ~ "MyelSchwannCell"
+  ))
+```
+
+```{r, fig.width=12}
+# Plot UMAPS with celltypes
+(DimPlot(nonneurons_ctrl_2000, group.by = "cell_type", label = TRUE, shuffle = TRUE, repel = TRUE))
+```
+
+```{r}
+# Transfer labels to all nonneurons
+nonneurons_ctrl_2000 %<>% set_idents("cell_type")
+nonneurons_2000 %<>% predict_labels(reference = nonneurons_ctrl_2000, dims = 1:20)
+```
+
+```{r}
+# Update full data with high level cell type slot (neuron or one of nonneuronal types)
+drg_ra_2000@meta.data %<>% 
+  rownames_to_column("cell") %>% 
+  left_join(
+    nonneurons_2000@meta.data %>%
+      rownames_to_column("cell") %>% 
+      select(cell, predicted.id),
+    by = c("cell")
+  ) %>% 
+  replace_na(list(predicted.id = "Neuron")) %>% 
+  rename(cell_class = predicted.id) %>% 
+  column_to_rownames("cell")
+```
+
+```{r, fig.width=12}
+# Plot UMAPS with high level cell types
+DimPlot(drg_ra_2000, group.by = "timepoint_days", shuffle = TRUE) + 
+(DimPlot(drg_ra_2000, group.by = "cell_class", label = TRUE, shuffle = TRUE, repel = TRUE) + NoLegend())
+```
+
+```{r}
+# Save object with high level cell types
+saveRDS(drg_ra_2000, file = here::here("data", "proc", "all_cells_after_first_clustering_2000genes.rds"))
+```
+
+#### Collect remaining non-neuronal cells that have 999 < Features < 2001
+```{r}
+# Integrate with harmony
+drg_ra_1000 %<>% run_harmony()
+```
+
+```{r}
+# Cluster cells
+drg_ra_1000 %<>% cluster_seurat(reduction = "harmony", dims = 1:30, resolution = 0.1)
+```
+
+```{r, fig.width=12}
+# Plot UMAPS
+(DimPlot(drg_ra_1000, label = TRUE, shuffle = TRUE) + NoLegend()) +
+  (DimPlot(drg_ra_1000, shuffle = TRUE, group.by = "orig.ident") + NoLegend()) +
+  (DimPlot(drg_ra_1000, group.by = "timepoint_days", shuffle = TRUE) ) 
+```
+
+```{r, fig.width=12}
+# Plot split UMAPs by timepoint
+DimPlot(drg_ra_1000, label = TRUE, shuffle = TRUE, split.by = "timepoint_days", ncol = 4) + NoLegend() 
+```
+
+```{r, fig.width=12}
+# Check where the neurons are
+FeaturePlot(drg_ra_1000, c("Rbfox3", "Slc17a6"), label = TRUE)
+```
+
+```{r}
+# Transfer labels from 2000 feature dataset
+drg_ra_2000 %<>% set_idents("cell_class")
+drg_ra_1000 %<>% predict_labels(reference = drg_ra_2000, dims = 1:30)
+```
+
+```{r, fig.width=12}
+DimPlot(drg_ra_1000, label = TRUE, group.by = "predicted.id", repel = TRUE) 
+```
+
+```{r}
+# Add a cutoff for prediction score
+drg_ra_1000@meta.data %<>% 
+  mutate(predicted_id = ifelse(prediction.score.max < 0.55, "unassigned", predicted.id))
+```
+
+```{r, fig.width=12}
+# Plot with cutoff
+DimPlot(drg_ra_1000, label = TRUE, group.by = "predicted_id", repel = TRUE) 
+```
+
+```{r}
+# Save full drg_ra_1000 obejct
+saveRDS(drg_ra_1000, file = here::here("data", "proc", "all_cells_after_first_clustering_1000genes.rds"))
+```
+
+```{r}
+# Filter out unassigned cells
+(drg_ra_1000_only_predicted <-
+  drg_ra_1000 %>%
+  set_idents("predicted_id") %>%
+  subset(
+    idents = drg_ra_1000@meta.data$predicted_id %>% unique() %>% keep(~ .x != "unassigned")
+  ))
+```
+
+```{r, fig.width=12}
+# Plot filtered secondary dataset
+DimPlot(drg_ra_1000_only_predicted, label = TRUE, group.by = "predicted_id", repel = TRUE) 
+```
+
+```{r}
+# Save filtered secondary dataset
+saveRDS(drg_ra_1000_only_predicted, file = here::here("data", "proc", "all_cells_after_first_clustering_1000genes_only_predicted.rds"))
+```
+
+#### Merge secondary data non-neurons with primary data
+```{r}
+# Merge secondary data non-neurons with primary data
+(drg_ra_full <-
+  drg_ra_1000_only_predicted %>% 
+  subset(
+    idents = 
+      drg_ra_1000_only_predicted@meta.data$predicted_id %>% 
+      unique() %>% 
+      keep(~ .x != "Neuron")
+  ) %>% 
+  merge(drg_ra_2000))
+```
+
+```{r}
+# Fix cell_class in metadata
+drg_ra_full@meta.data %<>% 
+  mutate(cell_class = ifelse(is.na(predicted_id), cell_class, predicted_id))
+```
+
+```{r}
+# Run harmony and cluster
+drg_ra_full %<>% 
+  run_harmony() %>% 
+  cluster_seurat(dims = 1:30, resolution = 0.1) %>% 
+  set_idents("cell_class")
+```
+
+```{r, fig.width=12, message=FALSE}
+# Plot UMAP of final merged dataset
+DimPlot(drg_ra_full, label = TRUE) 
+```
+
+```{r, fig.width=12}
+# Plot DotPlot for celltype markers from Yim et al. (and basic sensory neuron markers)
+# https://doi.org/10.1038/s41593-021-01005-1
+drg_ra_full %>%
+  DotPlot(
+    features =
+      c("Pdgfra",
+        "Egfr",
+        "Cd74",
+        "Mrc1",
+        "Rbpj",
+        "Ptprc",
+        "Prx",
+        "Scn7a",
+        "Cnp",
+        "Plp1",
+        "Fabp7",
+        "Ncam1",
+        "Slc35f1",
+        "Acta2",
+        "Itgbl1",
+        "Pdgfrb",
+        "Cldn5",
+        "Slit2",
+        "Prox1",
+        "Lyve1",
+        "Opcml",
+        "Rbfox3",
+        "Slc17a6")
+  ) +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
+```
+
+```{r, fig.width=12}
+# Plot celltype proportions in each timepoint
+drg_ra_full@meta.data %>% 
+  count(timepoint_days, cell_class) %>% 
+  group_by(timepoint_days) %>% 
+  mutate(pct = prop.table(n) * 100) %>%
+  ggplot(aes(factor(timepoint_days), pct, fill = cell_class)) +
+  geom_bar(stat = "identity") +
+  geom_text(aes(label=paste0(sprintf("%1.1f", pct),"%")),
+            position=position_stack(vjust=0.5)) +
+  labs(x = "Timepoint in days", y = "Proportion of cells", fill = "Cell class") +
+  cowplot::theme_cowplot() +
+  scale_y_continuous(expand = expansion(mult = c(0, .1)))
+```
+
+```{r}
+# Save full integrated data
+saveRDS(drg_ra_full, file = here::here("data", "proc", "drg_ra_full_merged.rds"))
+```
+
+```{r}
+# Sessioninfo
+sessionInfo()
+```
+
+```{r}
+# Done!
+clear_libraries()
+```

@@ -1,0 +1,88 @@
+---
+title: "01 Preprocessing"
+author: "Jussi Kupari"
+date: "Last edited: `r Sys.Date()`"
+output: html_notebook
+---
+
+```{r}
+# Load libraries and custom functions
+suppressPackageStartupMessages({
+  library(here)
+  library(fs)
+  library(tidyverse)
+  library(magrittr)
+  library(Seurat)
+})
+
+R.utils::sourceDirectory(here("R", "functions"), modifiedOnly=FALSE)
+```
+
+```{r}
+# Create single Seurat object from individual datasets
+sample_names <-
+  dir_ls(here("data", "raw")) %>%
+  map_chr(str_extract, "P2.*")
+
+drg_ra <-
+  map(dir_ls(here("data", "raw")), Read10X) %>%
+  map(CreateSeuratObject) %>%
+  set_names(sample_names)
+
+drg_ra %<>%
+  map2(sample_names, ~
+    { .x@meta.data %<>%
+      mutate(orig.ident = .y)
+      return(.x) })
+
+drg_ra %<>% reduce(merge)
+```
+
+```{r}
+# Add metadata: percent.mt, sample_info, timepoint_info (days since induction of RA)
+
+drg_ra[["percent.mt"]] <- PercentageFeatureSet(drg_ra, pattern = "^mt-")
+
+metadata <- readRDS(here("data", "metadata.rds"))
+
+drg_ra@meta.data %<>%
+  rownames_to_column("cell") %>%
+  left_join(metadata, by = c("orig.ident" = "NGI_ID")) %>%
+  column_to_rownames("cell")
+
+drg_ra@meta.data %<>%
+  rownames_to_column("cell") %>%
+  mutate(
+    treatment = ifelse(str_detect(Sample_information, "Control"), "Control", "RA"),
+    timepoint_days = case_when(
+      str_detect(Sample_information, "6hr_") ~ 0.25,
+      str_detect(Sample_information, "12hr_") ~ 0.5,
+      str_detect(Sample_information, "24hr_") ~ 1,
+      str_detect(Sample_information, "48hr_") ~ 2,
+      str_detect(Sample_information, "D3_") ~ 3,
+      str_detect(Sample_information, "D12_") ~ 12,
+      str_detect(Sample_information, "D33_") ~ 33,
+      str_detect(Sample_information, "D63_") ~ 63,
+      TRUE ~ 0
+    )) %>%
+  column_to_rownames("cell")
+
+drg_ra %<>% 
+  set_idents("timepoint_days") %>% 
+  subset(idents = c("0", "0.25", "0.5", "1", "2", "12", "33", "63"))
+```
+
+```{r}
+# Save preprocessed seurat object
+saveRDS(drg_ra, file = here("data", "proc", "drg_ra_preprocessed.rds"))
+```
+
+```{r}
+# Sessioninfo
+sessionInfo()
+```
+
+```{r}
+# The End
+clear_libraries()
+```

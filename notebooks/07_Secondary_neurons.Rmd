@@ -1,0 +1,297 @@
+---
+title: "07 Seconday Neuron Identification"
+author: "Jussi Kupari"
+date: "Last edited: `r Sys.Date()`"
+output: html_notebook
+---
+
+```{r, warning=FALSE}
+# Load libraries and custom functions
+suppressPackageStartupMessages({
+  library(tidyverse)
+  library(magrittr)
+  library(Seurat)
+  library(harmony)
+  library(scPred)
+})
+
+R.utils::sourceDirectory(here::here("R", "functions"), modifiedOnly=FALSE)
+```
+
+```{r}
+# Load full secondary data with 1000 to 2000 detected genes
+(drg_ra_1000 <- 
+   readRDS(here::here("data", "proc", "all_cells_after_first_clustering_1000genes_only_predicted.rds")))
+```
+
+```{r, fig.width=12}
+# Plot UMAP of final merged dataset
+DimPlot(drg_ra_1000, label = TRUE, repel = TRUE) 
+```
+
+#### Neuron primary clustering
+```{r}
+# Subset neurons from full cell palette
+(neurons <-
+   drg_ra_1000 %>%
+   set_idents("predicted.id") %>%
+   subset(idents = "Neuron"))
+```
+
+```{r}
+# Run Harmony
+neurons %<>% run_harmony()
+```
+
+```{r}
+# Cluster
+neurons %<>% cluster_seurat(reduction = "harmony", dims = 1:20, resolution = 0.5)
+```
+
+```{r, fig.width=12}
+# Plot UMAPS 
+(DimPlot(neurons, group.by = "orig.ident", shuffle = TRUE) + NoLegend()) +
+  (DimPlot(neurons, label = TRUE, shuffle = TRUE))
+```
+
+```{r, fig.width=12}
+# Check neuron markers and number of features in UMAP
+FeaturePlot(neurons, c("Rbfox3", "Slc17a6", "nFeature_RNA"), pt.size = 0.1, label = TRUE)
+```
+
+```{r, fig.width=12}
+# Check violins for neuron marker with a cutoff
+VlnPlot(neurons, "Rbfox3", pt.size = 0) + 
+  geom_hline(yintercept = 0.5, color = "red", size = 1)
+```
+
+```{r}
+# Subset only QC neurons based on Rbfox3 expression
+(neurons %<>% subset(Rbfox3 > 0.5))
+```
+
+```{r}
+# Run Harmony again
+neurons %<>% run_harmony()
+```
+
+```{r}
+# Cluster neurons again
+neurons %<>% cluster_seurat(reduction = "harmony", dims = 1:20, resolution = 0.5)
+```
+
+```{r, fig.width=12}
+# Plot UMAPS
+(DimPlot(neurons, group.by = "orig.ident", shuffle = TRUE) + NoLegend()) +
+  (DimPlot(neurons, label = TRUE, shuffle = TRUE))
+```
+
+```{r, fig.width=12}
+# Check some violins
+VlnPlot(neurons, c("Rbfox3", "Apoe", "Fabp7", "nFeature_RNA"), pt.size = 0)
+```
+
+```{r}
+# Filter out cells with high Apoe expression
+(neurons %<>% subset(Apoe < 2))
+```
+
+```{r}
+# Run Harmony once more
+neurons %<>% run_harmony()
+```
+
+```{r}
+# Cluster neurons 
+neurons %<>% cluster_seurat(reduction = "harmony", dims = 1:20, resolution = 0.5)
+```
+
+```{r, fig.width=12}
+# Plot UMAPS once again
+(DimPlot(neurons, group.by = "timepoint_days", shuffle = TRUE)) +
+  (DimPlot(neurons, label = TRUE, shuffle = TRUE))
+```
+
+```{r, fig.width=12}
+# Some violins again
+VlnPlot(neurons, c("Apoe", "Fabp7", "Slc17a6", "Rbfox3", "Snap25", "nFeature_RNA"), pt.size = 0)
+```
+
+#### Assign celltypes to neurons using Zeisel et. al data (but Usoskin et al. identities)
+```{r}
+# Load Zeisel data
+zeisel <- readRDS(here::here("data", "ref", "zeisel_drg.rds"))
+```
+
+```{r}
+# Create classifier
+zeisel %<>%
+  NormalizeData() %>%
+  FindVariableFeatures() %>%
+  ScaleData() %>%
+  RunPCA(npcs = 100, verbose = FALSE)
+
+zeisel %<>%
+  getFeatureSpace("usoskin_id") %>%
+  trainModel(model = "mda")
+```
+
+```{r}
+# Check model performance
+zeisel %>% get_scpred()
+```
+
+```{r}
+# Predict labels for current dataset neurons
+neurons %<>% scPredict(zeisel)
+```
+
+```{r, fig.width=12}
+# Plot xax score distribution from scPred
+neurons@meta.data %>%
+  ggplot(aes(scpred_max)) +
+  geom_histogram(
+    bins = 50,
+    color = "white",
+    fill = "darkblue",
+    alpha = 0.7) +
+  geom_vline(xintercept = 0.55, color = "red", size = 1) +
+  cowplot::theme_cowplot() +
+  scale_y_continuous(expand = expansion(mult = c(0, .1))) +
+  labs(
+    title = "",
+    x = "Max prediction score",
+    y = "Number of cells"
+  )
+```
+
+```{r, fig.width=12}
+# Plot prediction score heatmap
+neurons@meta.data %>%
+  select(
+    starts_with("scpred_"),
+    -c(scpred_max, scpred_prediction,scpred_no_rejection)
+  ) %>%
+  rename_with(~ str_remove(.x, "scpred_")) %>%
+  t() %>%
+  pheatmap::pheatmap(
+    cluster_rows = FALSE,
+    cluster_cols = TRUE,
+    treeheight_col = 0,
+    show_colnames = FALSE,
+    color = viridisLite::viridis(10),
+    fontsize = 12,
+    title = ""
+  )
+```
+
+```{r, fig.width=12}
+# Plot UMAP with assigned labels
+(DimPlot(
+  neurons,
+    group.by = "scpred_prediction",
+    label = TRUE,
+    shuffle = TRUE,
+    repel = TRUE)) +
+
+  (DimPlot(
+    neurons,
+    group.by = "scpred_no_rejection",
+    label = TRUE,
+    shuffle = TRUE,
+    repel = TRUE))
+```
+
+```{r}
+# Filter out the few unassigned cells
+(neurons %<>% 
+  set_idents("scpred_prediction") %>% 
+  subset(
+    idents = neurons@meta.data$scpred_prediction %>% unique() %>% keep(~ .x != "unassigned")
+  ))
+neurons@meta.data %<>% 
+  mutate(usoskin_id = scpred_prediction)
+```
+
+```{r, fig.width=12}
+# Find MRGPRB4 neurons
+(VlnPlot(neurons, "Mrgprb4", group.by = "usoskin_id") + NoLegend()) +
+  (VlnPlot(neurons, "Mrgprb4", group.by = "usoskin_id") + NoLegend())
+```
+
+```{r, fig.width=12}
+# Plot UMAP with assigned labels
+(DimPlot(
+  neurons,
+    group.by = "usoskin_id",
+    label = TRUE,
+    shuffle = TRUE,
+    repel = TRUE)) +
+  NoLegend()
+```
+
+```{r, results='hide'}
+# Get top markers for celltypes (for some qc plotting)
+neurons %<>% set_idents("usoskin_id")
+
+order <- 
+  c(
+  "NP1",
+  "NP2",
+  "NP3",
+  "PEP1",
+  "Th",
+  "TRPM8",
+  "PEP2",
+  "NF1",
+  "NF2_3",
+  "NF4"
+)
+Idents(neurons) <- factor(x = Idents(neurons), levels = order)
+
+markers_usoskin <-
+  neurons %>%
+  FindAllMarkers(only.pos = TRUE, assay = "RNA") 
+```
+
+```{r, fig.width=12, warning=FALSE}
+# DotPlot
+top_usoskin_genes <-
+  markers_usoskin %>% 
+  group_by(cluster) %>%
+  slice_min(p_val_adj, n = 3, with_ties = FALSE)
+
+DotPlot(neurons, features = unique(top_usoskin_genes$gene)) +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
+```
+
+```{r, fig.width=12}
+# Plot celltype proportions in each timepoint
+neurons@meta.data %>% 
+  count(timepoint_days, usoskin_id) %>% 
+  group_by(timepoint_days) %>% 
+  mutate(pct = prop.table(n) * 100) %>%
+  ggplot(aes(factor(timepoint_days), pct, fill = usoskin_id)) +
+  geom_bar(stat = "identity") +
+  geom_text(aes(label=paste0(sprintf("%1.1f", pct),"%")),
+            position=position_stack(vjust=0.5)) +
+  labs(x = "Timepoint in days", y = "Proportion of cells", fill = "Neuron type") +
+  cowplot::theme_cowplot() +
+  scale_y_continuous(expand = expansion(mult = c(0, .1)))
+```
+
+```{r}
+# Count cells by timepoint
+neurons@meta.data %>% 
+  count(timepoint_days) 
+```
+
+```{r}
+# Save neuron object
+saveRDS(neurons, file = here::here("data", "proc", "secondary_neurons.rds"))
+```
+
+```{r}
+# Clear libraries
+clear_libraries()
+```
