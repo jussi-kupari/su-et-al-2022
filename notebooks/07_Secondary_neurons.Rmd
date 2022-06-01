@@ -5,7 +5,7 @@ date: "Last edited: `r Sys.Date()`"
 output: html_notebook
 ---
 
-```{r, warning=FALSE}
+```{r}
 # Load libraries and custom functions
 suppressPackageStartupMessages({
   library(tidyverse)
@@ -15,7 +15,7 @@ suppressPackageStartupMessages({
   library(scPred)
 })
 
-R.utils::sourceDirectory(here::here("R", "functions"), modifiedOnly=FALSE)
+R.utils::sourceDirectory(here::here("R", "functions"), modifiedOnly = FALSE)
 ```
 
 ```{r}

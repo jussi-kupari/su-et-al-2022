@@ -8,6 +8,9 @@ proj.user
 *.html
 *.tsv
 *.xlsx
+*.csv
+/data/*.rds
 /data/proc/*.rds
 /data/ref/*.rds
 /data/raw/P*
+/outputs/*.rds

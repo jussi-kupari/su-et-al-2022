@@ -1,4 +1,3 @@
-
 get_regulated_genes <- function(df, by, direction, p_adj = 10^-10, log2FC = 0.25) {
   
   stopifnot("by %not_in% c('celltype', 'timepoint')"  =

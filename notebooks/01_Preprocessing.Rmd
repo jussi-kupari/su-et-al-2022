@@ -15,7 +15,7 @@ suppressPackageStartupMessages({
   library(Seurat)
 })
 
-R.utils::sourceDirectory(here("R", "functions"), modifiedOnly=FALSE)
+R.utils::sourceDirectory(here("R", "functions"), modifiedOnly = FALSE)
 ```
 
 ```{r}

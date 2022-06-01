@@ -14,5 +14,4 @@ excel_out_gene_lists <- function(gene_list, out_dir, prefix) {
       element, file = here::here(out_dir, str_glue("{prefix}_{name}.xlsx"))
     )
   }
-  
 }

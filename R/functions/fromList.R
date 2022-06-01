@@ -1,5 +1,5 @@
-#ref: https://github.com/hms-dbmi/UpSetR/issues/85
 fromList <- function (input) {
+  # ref: https://github.com/hms-dbmi/UpSetR/issues/85
   # Same as original fromList()...
   elements <- unique(unlist(input))
   data <- unlist(lapply(input, function(x) {

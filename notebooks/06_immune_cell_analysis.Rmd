@@ -5,7 +5,7 @@ date: "Last edited: `r Sys.Date()`"
 output: html_notebook
 ---
 
-```{r, warning=FALSE}
+```{r}
 # Load libraries and functions
 suppressPackageStartupMessages({
   library(tidyverse)
@@ -18,7 +18,7 @@ suppressPackageStartupMessages({
   library(fcoex)
   library(scPred)
 })
-R.utils::sourceDirectory(here::here("R", "functions"), modifiedOnly=FALSE)
+R.utils::sourceDirectory(here::here("R", "functions"), modifiedOnly = FALSE)
 ```
 
 ```{r}
@@ -28,7 +28,7 @@ R.utils::sourceDirectory(here::here("R", "functions"), modifiedOnly=FALSE)
 
 ```{r, fig.width=12, results='hide'}
 # Plot UMAP of final merged dataset
-DimPlot(drg_ra_full, label = TRUE) 
+DimPlot(drg_ra_full, label = TRUE, repel = TRUE) 
 ```
 
 #### Immune cell analysis
@@ -216,7 +216,9 @@ innate_cells2@meta.data <-
 
 ```{r}
 # Check if ok
-innate_cells2@meta.data %>% select(label, cell_type, treatment)
+innate_cells2@meta.data %>% 
+  select(label, cell_type, treatment) %>% 
+  head(10)
 ```
 
 ```{r}
@@ -343,5 +345,4 @@ openxlsx::write.xlsx(by_timepoint, file = here::here("outputs", "immune_cells_by
 ```{r}
 # End
 clear_libraries()
-
 ```

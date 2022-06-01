@@ -1,4 +1,3 @@
-
 plot_aucs <- function(x, lower_limit = 0.5, upper_limit = 1) {
   x %>%
     ggplot(aes(time, auc)) +

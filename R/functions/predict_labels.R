@@ -1,4 +1,3 @@
-
 predict_labels <- function(query, reference, dims, k.weight = 50) {
   predictions <- TransferData(
     anchorset = FindTransferAnchors(

@@ -15,7 +15,7 @@ suppressPackageStartupMessages({
   library(scPred)
 })
 
-R.utils::sourceDirectory(here::here("R", "functions"), modifiedOnly=FALSE)
+R.utils::sourceDirectory(here::here("R", "functions"), modifiedOnly = FALSE)
 ```
 
 ```{r}
@@ -23,9 +23,9 @@ R.utils::sourceDirectory(here::here("R", "functions"), modifiedOnly=FALSE)
 (drg_ra_full <- readRDS(here::here("data", "proc", "drg_ra_full_merged.rds")))
 ```
 
-```{r, fig.width=12, message=FALSE}
+```{r, fig.width=12, results='hide'}
 # Plot UMAP of final merged dataset
-DimPlot(drg_ra_full, label = TRUE) 
+DimPlot(drg_ra_full, label = TRUE, repel = TRUE) 
 ```
 
 #### Neuron primary clustering
@@ -146,7 +146,7 @@ neurons %<>% scPredict(zeisel)
 ```
 
 ```{r, fig.width=12}
-# Plot xax score distribution from scPred
+# Plot max score distribution from scPred
 neurons@meta.data %>%
   ggplot(aes(scpred_max)) +
   geom_histogram(

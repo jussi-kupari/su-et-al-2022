@@ -15,7 +15,7 @@ suppressPackageStartupMessages({
   library(scPred)
 })
 
-R.utils::sourceDirectory(here::here("R", "functions"), modifiedOnly=FALSE)
+R.utils::sourceDirectory(here::here("R", "functions"), modifiedOnly = FALSE)
 ```
 
 ```{r}
@@ -294,9 +294,9 @@ drg_ra_full %<>%
   set_idents("cell_class")
 ```
 
-```{r, fig.width=12, message=FALSE}
+```{r, fig.width=12, results='hide'}
 # Plot UMAP of final merged dataset
-DimPlot(drg_ra_full, label = TRUE) 
+DimPlot(drg_ra_full, label = TRUE, repel = TRUE) 
 ```
 
 ```{r, fig.width=12}
