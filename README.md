@@ -3,19 +3,16 @@
 
 # jie2021
 
-<!-- badges: start -->
+[01 Preprocessing](https://github.com/jussi-kupari/su-et-al-2022/blob/main/notebooks/01_Preprocessing.md)
 
-[![Project Status: WIP - Initial development is in progress, but there
-has not yet been a stable, usable release suitable for the
-public.](https://www.repostatus.org/badges/latest/wip.svg)](https://www.repostatus.org/#wip)
-<!-- badges: end -->
+[02 QC and Preliminary Analysis](https://github.com/jussi-kupari/su-et-al-2022/blob/main/notebooks/02_QC_and_Preliminary_Analysis.md)
 
-The goal of jie2021 is to …
+[03 Neuron Identification](https://github.com/jussi-kupari/su-et-al-2022/blob/main/notebooks/03_Neuron_identification.md)
 
-## Installation
+[04 Neuron DE Analysis](https://github.com/jussi-kupari/su-et-al-2022/blob/main/notebooks/04_Neuron_DE_analysis.md)
 
-## Example
+[05 Non-neuronal Cell Analysis](https://github.com/jussi-kupari/su-et-al-2022/blob/main/notebooks/05_Nonneuronal_cell_analysis.md)
 
-``` r
-## basic example code
-```
+[06 Immune-cell Analysis](https://github.com/jussi-kupari/su-et-al-2022/blob/main/notebooks/06_immune_cell_analysis.md)
+
+[07 Secondary Neuron Analysis](https://github.com/jussi-kupari/su-et-al-2022/blob/main/notebooks/07_Secondary_neurons.md)
